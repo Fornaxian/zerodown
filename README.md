@@ -77,7 +77,7 @@ file, err := listener.File()
 zerodown.ExtraFiles = []*os.File{file}
 ```
 
-The client can then get the file descriptor from the parent and convert it back
+The child can then get the file descriptor from the parent and convert it back
 to a listener:
 
 ```go
