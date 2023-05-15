@@ -19,36 +19,11 @@ the updated code.
 
 `zerodown.Init()` should be the very first thing your program runs when
 starting. Right at the top of the main function. Then you can start your whole
-application server listen on ports, connect to the database, etc.
+application server. Listen on ports, connect to the database, etc.
 
 When you are ready to serve requests you call `zerodown.StartupFinished()`. This
 will tell the parent process that you are done and it will shutdown the previous
 process.
-
-## Creating Listeners
-
-If you're running a server application of some kind you'll need a socket to
-listen on. Normally only a single process can listen on a TCP port at one time,
-luckily for us SO_REUSEPORT exists. This allows multiple processes to listen on
-a network port. This allows us to seamlessly pass traffic from the old process
-to the new process without any downtime.
-
-Another approach is to start the listeners in the parent process and pass them
-to the child as file descriptors. This can be done by using the net.TCPListen
-function to get your listener and calling File on it:
-
-```go
-listener, err := net.ListenTCP("tcp", &net.TCPAddr{Port: 443})
-file, err := listener.File()
-zerodown.ExtraFiles = []*os.File{file}
-```
-
-The client can then get the file descriptor from the parent and convert it back
-to a listener:
-
-```go
-listener := net.FileListener(os.NewFile(3, "MyListener"))
-```
 
 ## Example
 
@@ -84,11 +59,36 @@ func main() {
 }
 ```
 
+## Creating Listeners
+
+If you're running a server application of some kind you'll need a socket to
+listen on. Normally only a single process can listen on a TCP port at one time,
+luckily for us SO_REUSEPORT exists. This allows multiple processes to listen on
+a network port. Now we can seamlessly pass traffic from the old process to the
+new process without any downtime.
+
+Another approach is to start the listeners in the parent process and pass them
+to the child as file descriptors. This can be done by using the net.ListenTCP()
+function to get your listener and calling File() on it:
+
+```go
+listener, err := net.ListenTCP("tcp", &net.TCPAddr{Port: 443})
+file, err := listener.File()
+zerodown.ExtraFiles = []*os.File{file}
+```
+
+The client can then get the file descriptor from the parent and convert it back
+to a listener:
+
+```go
+listener := net.FileListener(os.NewFile(3, "MyListener"))
+```
+
 ## Example systemd service file
 
 With this systemd service you can use `systemctl reload` to reload your server.
 
-```toml
+```
 [Unit]
 Description=My API server
 After=network.target
