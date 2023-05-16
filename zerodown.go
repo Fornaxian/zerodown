@@ -13,7 +13,7 @@ import (
 )
 
 var (
-	// Process ID of the master process
+	// Process ID of the parent process
 	parentPID = 0
 
 	Logger = log.Default()
@@ -36,15 +36,7 @@ var (
 
 const initFinishedSignal = syscall.SIGUSR1
 
-func print(str string, args ...any) {
-	if parentPID == 0 {
-		Logger.Printf("Zerodown-parent: "+str+"\n", args...)
-	} else {
-		Logger.Printf("Zerodown-child: "+str+"\n", args...)
-	}
-}
-
-// Initialize the zerodown master process. This should be the very first thing
+// Initialize the zerodown parent process. This should be the very first thing
 // your main function calls. If this function returns exit=true then your main
 // function should return.
 //
@@ -66,11 +58,11 @@ func Init() (exit bool) {
 	// parent. If this is a child process we return and tell the main function
 	// to carry on with initialization
 	if IsChild() {
-		print("Parent PID is %d", parentPID)
+		print("Our PID: %d. Parent PID: %d", os.Getpid(), parentPID)
 		return false
 	}
 
-	print("Master process started with PID %d. Starting child and listening for signals...", os.Getpid())
+	print("Parent process started with PID %d. Starting child and listening for signals...", os.Getpid())
 
 	// Start the child process
 	if err := restart(); err != nil {
@@ -96,8 +88,13 @@ func Init() (exit bool) {
 			print("All child processes ended. Shutdown complete!")
 			return true
 		} else if inArray(sig, PassthroughSignals) {
-			print("Caught signal %s, passing through to children", sig)
-			stopChild(childProcess)
+			print("Caught signal %s, passing through to child", sig)
+
+			if childProcess != nil {
+				if err := childProcess.Signal(syscall.SIGINT); err != nil {
+					print("Failed to send signal to child process %d: %s", childProcess.Pid, err)
+				}
+			}
 		}
 	}
 
@@ -110,10 +107,11 @@ func StartupFinished() {
 
 		process, err := os.FindProcess(parentPID)
 		if err != nil {
-			print("Could not find parent process: %s", err)
+			panic(fmt.Errorf("could not find parent process: %w", err))
+
 		}
 		if err = process.Signal(initFinishedSignal); err != nil {
-			print("Could not signal parent process: %s", err)
+			panic(fmt.Errorf("could not signal parent process: %w", err))
 		}
 	} else {
 		panic("StartupFinished should not be called on the parent process itself")

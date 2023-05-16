@@ -2,27 +2,9 @@ package zerodown
 
 import (
 	"fmt"
-	"net"
 	"os"
 	"strconv"
 )
-
-// PassthroughSockets tells zerodown to pass through all file descriptors to the
-// child process. This allows you to use Systemd Socket Activation with zerodown
-func PassthroughSockets() {
-	// Find files which were passed to us from the parent process. The NewFile
-	// function returns nil when a file is not found
-	for fd := 3; ; fd++ {
-		file := os.NewFile(uintptr(fd), fmt.Sprintf("FILE_%d_FROM_PARENT", fd))
-		if file != nil {
-			ExtraFiles = append(ExtraFiles, file)
-		} else {
-			break
-		}
-	}
-
-	net.FileListener(os.NewFile(3, "MyListener"))
-}
 
 func IsParent() bool {
 	parent, err := strconv.Atoi(os.Getenv("PD_PARENT_PROCESS"))
@@ -35,6 +17,34 @@ func IsParent() bool {
 
 func IsChild() bool {
 	return !IsParent()
+}
+
+// Restart allows a child process to call for a restart. The parent process will
+// start a new child and will shut down the current process
+func Restart() (err error) {
+	if parentPID != 0 {
+		print("Sending %s signal to parent PID %d", ReloadSignals[0], parentPID)
+
+		process, err := os.FindProcess(parentPID)
+		if err != nil {
+			return fmt.Errorf("could not find parent process: %w", err)
+		}
+		if err = process.Signal(ReloadSignals[0]); err != nil {
+			return fmt.Errorf("could not signal parent process: %w", err)
+		}
+	} else {
+		panic("Restart should not be called on the parent process itself")
+	}
+
+	return nil
+}
+
+func print(str string, args ...any) {
+	if parentPID == 0 {
+		Logger.Printf("Zerodown-parent: "+str+"\n", args...)
+	} else {
+		Logger.Printf("Zerodown-child: "+str+"\n", args...)
+	}
 }
 
 func inArray[T comparable](needle T, haystack []T) bool {

@@ -84,6 +84,9 @@ to a listener:
 listener := net.FileListener(os.NewFile(3, "MyListener"))
 ```
 
+The example directory contains an example for passing down listeners and system
+socket activation.
+
 ## Example systemd service file
 
 With this systemd service you can use `systemctl reload` to reload your server.
