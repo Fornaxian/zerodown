@@ -27,14 +27,17 @@ var (
 	// Signals to pass through to the child process
 	PassthroughSignals []os.Signal
 
+	// Signal the child process sends to the parent process to indicate that
+	// initialization is finished. Make this this is the same on both the parent
+	// and the child
+	StartupFinishedSignal = syscall.SIGUSR1
+
 	// Extra file descriptors to pass to the child process
 	ExtraFiles []*os.File
 
 	// Extra environment variables to pass to the child process
 	ExtraVariables []string
 )
-
-const initFinishedSignal = syscall.SIGUSR1
 
 // Initialize the zerodown parent process. This should be the very first thing
 // your main function calls. If this function returns exit=true then your main
@@ -110,7 +113,7 @@ func StartupFinished() {
 			panic(fmt.Errorf("could not find parent process: %w", err))
 
 		}
-		if err = process.Signal(initFinishedSignal); err != nil {
+		if err = process.Signal(StartupFinishedSignal); err != nil {
 			panic(fmt.Errorf("could not signal parent process: %w", err))
 		}
 	} else {
@@ -174,7 +177,7 @@ func waitForChildInit() {
 	// child process is done with initialization. When the signal is received,
 	// or a timeout is reached, we stop listening
 	var initChan = make(chan os.Signal, 1)
-	signal.Notify(initChan, initFinishedSignal)
+	signal.Notify(initChan, StartupFinishedSignal)
 	defer signal.Stop(initChan)
 
 	var timer = time.NewTimer(time.Minute * 10)
