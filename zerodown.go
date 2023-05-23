@@ -18,10 +18,16 @@ var (
 
 	Logger = log.Default()
 
+	// Time to wait for a new process to initialize. When this time has passed
+	// the old process will be killed whether the new processes has finished
+	// initializing or not.
+	StartupTimeout = time.Minute * 10
+
 	// Signals which cause the child process to be restarted
 	ReloadSignals = []os.Signal{syscall.SIGHUP}
 
-	// Signals which cause the server to shut down
+	// Signals which cause the server to shut down. The first signal in this
+	// list is used to shut down the child process when it's time to restart
 	StopSignals = []os.Signal{syscall.SIGINT, syscall.SIGTERM, syscall.SIGQUIT}
 
 	// Signals to pass through to the child process
@@ -85,7 +91,10 @@ func Init() (exit bool) {
 		} else if inArray(sig, StopSignals) {
 			print("Interrupt caught. Stopping child processes...")
 
+			// Send the stop signal to the child process
 			stopChild(childProcess)
+
+			// Wait for processes to shut down
 			shutdownWG.Wait()
 
 			print("All child processes ended. Shutdown complete!")
@@ -94,7 +103,7 @@ func Init() (exit bool) {
 			print("Caught signal %s, passing through to child", sig)
 
 			if childProcess != nil {
-				if err := childProcess.Signal(syscall.SIGINT); err != nil {
+				if err := childProcess.Signal(sig); err != nil {
 					print("Failed to send signal to child process %d: %s", childProcess.Pid, err)
 				}
 			}
@@ -121,9 +130,25 @@ func StartupFinished() {
 	}
 }
 
-var shutdownWG = &sync.WaitGroup{}
-var totalChildren = 0
-var childProcess *os.Process
+var (
+	// Waitgroup to wait for all child processes to exit before we can exit. If
+	// we don't wait for out child processes to end the processes will be
+	// disowned and may never stop
+	shutdownWG = &sync.WaitGroup{}
+
+	// Stopped is used to notify the waitForChildInit when the child process has
+	// unexpectedly ended. This way we avoid having to wait for the timeout when
+	// a child process crashes.
+	stopped = make(chan int, 1)
+
+	// Total number of times the child process was restarted. This is used for
+	// nothing but logging
+	restartCounter = 0
+
+	// The old process will be shut down once the new process has finished
+	// initialization
+	childProcess *os.Process
+)
 
 func restart() (err error) {
 	executable, err := os.Executable()
@@ -150,29 +175,55 @@ func restart() (err error) {
 		return fmt.Errorf("failed to start child process: %w", err)
 	}
 
-	totalChildren++
+	watchChild(cmd.Process)
+
+	// Swap the processes
+	var oldProcess = childProcess
+	childProcess = cmd.Process
+
+	restartCounter++
 	print(
 		"Child process %d started with PID %d. Waiting for initialization to "+
-			"finish before stopping previous servers",
-		totalChildren, cmd.Process.Pid,
+			"finish before stopping previous process",
+		restartCounter, cmd.Process.Pid,
 	)
 
 	// Wait for the child process to initialize before giving the old process
 	// the order to shut down. This allows the old process to keep answering
 	// requests until the new process is ready to go
-	waitForChildInit()
+	waitForChildInit(cmd.Process.Pid)
 
-	// Stop the old child process in the background. We need to wait for the
-	// process to stop in a separate thread or else it will turn into a zombie
-	stopChild(childProcess)
-
-	// Replace the old child process with the new child process
-	childProcess = cmd.Process
+	// Now that we know that the new process has finished initializing we can
+	// tell the previous process to shut down
+	stopChild(oldProcess)
 
 	return nil
 }
 
-func waitForChildInit() {
+// watchChild calls Wait on the child process so that the resources are properly
+// released when the process ends. If we don't do this the process will turn
+// into a zombie when it exits. The process is added to the shutdown waitgroup
+// so that the parent process cannot exit until the child process has exited.
+func watchChild(child *os.Process) {
+	shutdownWG.Add(1)
+	go func() {
+		state, err := child.Wait()
+
+		print(
+			"Child process with PID %d exited with state '%s' and err %v",
+			child.Pid, state, err,
+		)
+
+		shutdownWG.Done()
+
+		// Send the PID through the stopped channel. If waitForChildInit is
+		// waiting this will tell it that the process has ended. This channel is
+		// buffered so this goroutine can end when no-one is listening
+		stopped <- child.Pid
+	}()
+}
+
+func waitForChildInit(pid int) {
 	// Make a channel to start listening for SIGUSR1, the signal sent when the
 	// child process is done with initialization. When the signal is received,
 	// or a timeout is reached, we stop listening
@@ -180,37 +231,34 @@ func waitForChildInit() {
 	signal.Notify(initChan, StartupFinishedSignal)
 	defer signal.Stop(initChan)
 
-	var timer = time.NewTimer(time.Minute * 10)
+	var timer = time.NewTimer(StartupTimeout)
 	defer timer.Stop()
 
-	select {
-	case <-timer.C:
-		print("Waiting for child process timed out")
-
-	case <-initChan:
-		print("Child init finished")
+	for {
+		select {
+		case <-initChan:
+			print("Child init finished")
+			return
+		case <-timer.C:
+			print("Waiting for child process timed out")
+			return
+		case spid := <-stopped:
+			if pid == spid {
+				print("Child process %d has crashed before initialization!", pid)
+				return
+			}
+		}
 	}
 }
 
 func stopChild(child *os.Process) {
-	if childProcess == nil {
+	if child == nil {
 		return
 	}
 
-	shutdownWG.Add(1)
-	go func() {
-		defer shutdownWG.Done()
+	print("Sending stop signal to child process with PID %d", child.Pid)
 
-		print("Sending stop signal to child process with PID %d", child.Pid)
-
-		if err := child.Signal(syscall.SIGINT); err != nil {
-			print("Failed to send SIGINT to child process %d: %s", child.Pid, err)
-		}
-
-		state, err := child.Wait()
-		print(
-			"Child process with PID %d exited with state '%s' and err %v",
-			child.Pid, state, err,
-		)
-	}()
+	if err := child.Signal(StopSignals[0]); err != nil {
+		print("Failed to send SIGINT to child process %d: %s", child.Pid, err)
+	}
 }
